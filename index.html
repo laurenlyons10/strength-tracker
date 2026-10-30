@@ -116,7 +116,7 @@ function lastText(sessions){
 function go(v){state.view=v;render();}
 async function render(){
   try{
-    const views={login:renderLogin,home:renderHome,session:renderSession,template:renderTemplate,history:renderHistory};
+    const views={login:renderLogin,home:renderHome,session:renderSession,template:renderTemplate,history:renderHistory,password:renderPassword};
     await views[state.view]();
   }catch(err){
     root.innerHTML=`<div class="card"><p>Something went wrong: ${esc(err.message)}</p><button data-act="home">Back to home</button></div>`;
@@ -153,8 +153,16 @@ async function renderHome(){
       <button data-act="start" data-id="${t.id}">${done?'Open':'Start'}</button>
       <button data-act="template" data-id="${t.id}">Edit</button></div>`;
   }).join('');
-  root.innerHTML=`<div class="top"><span>Strength</span><span><button class="link" data-act="history">History</button> · <button class="link" data-act="logout">Sign out</button></span></div>
+  root.innerHTML=`<div class="top"><span>Strength</span><span><button class="link" data-act="history">History</button> · <button class="link" data-act="password">Set password</button> · <button class="link" data-act="logout">Sign out</button></span></div>
   <div class="card"><p class="muted">Week of ${fmtDate(ymd(wk))}</p><h2>This week</h2><p class="muted">${esc(cycleTxt)}</p>${tiles}</div>`;
+}
+
+function renderPassword(){
+  root.innerHTML=`<div class="top"><button class="link" data-act="home">‹ Home</button><span>Set password</span></div>
+  <div class="card"><p class="muted">Choose a password you'll use to sign in from now on.</p>
+  <input id="np1" type="password" placeholder="New password" autocomplete="new-password" style="margin-bottom:8px">
+  <input id="np2" type="password" placeholder="Confirm password" autocomplete="new-password" style="margin-bottom:10px">
+  <button class="blue" data-act="savepw" style="width:100%">Save password</button></div>`;
 }
 
 async function startOrOpen(templateId){
@@ -314,6 +322,17 @@ document.addEventListener('click',async e=>{
         return go('home');
       }
       case 'logout': await sb.auth.signOut(); return go('login');
+      case 'password': return go('password');
+      case 'savepw': {
+        const p1=document.getElementById('np1').value;
+        const p2=document.getElementById('np2').value;
+        if(p1.length<8) return alert('Use at least 8 characters');
+        if(p1!==p2) return alert('The two passwords do not match');
+        const {error}=await sb.auth.updateUser({password:p1});
+        if(error) return alert(error.message);
+        alert('Password saved. Use it next time you sign in.');
+        return go('home');
+      }
       case 'home': return go('home');
       case 'history': state.exerciseId=null; return go('history');
       case 'exhist': state.exerciseId=id; return go('history');
