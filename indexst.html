@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Strength">
+<meta name="theme-color" content="#E6007E">
+<title>Strength</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#E6007E;color:#111;min-height:100vh;padding:14px 14px 40px}
+#app{max-width:560px;margin:0 auto}
+.card{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px}
+h2,h3{margin:0 0 8px;font-weight:500}
+.sec{color:#0047FF;margin:14px 0 6px;font-size:15px}
+.muted{color:#555;font-size:13px;margin:2px 0 8px}
+.pink{color:#E6007E}
+.top{display:flex;justify-content:space-between;align-items:center;color:#fff;margin:4px 0 10px;font-weight:500;gap:8px}
+button{font:inherit;border:1px solid #ccc;background:#fff;color:#111;border-radius:10px;padding:8px 12px;cursor:pointer;min-height:36px}
+button.blue{background:#0047FF;color:#fff;border-color:#0047FF}
+button.danger{color:#E6007E;border-color:#E6007E}
+button.link{background:none;border:none;color:#fff;padding:0;min-height:0}
+input,select,textarea{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px;width:100%;min-width:0;background:#fff;color:#111}
+.tile{display:flex;gap:10px;align-items:center;border-radius:12px;padding:12px;margin-bottom:8px}
+.tile.next{background:#0047FF;color:#fff}
+.tile.next .muted{color:#DCE7FF}
+.tile.done{background:#FFE4F3}
+.tile.todo{background:#F3F3F3}
+.set-row,.set-head{display:grid;grid-template-columns:24px 1fr 1fr 44px;gap:6px;align-items:center;margin-bottom:6px}
+.set-head{font-size:12px;color:#555}
+.check{width:40px;height:40px;padding:0;font-size:18px}
+.check.on{background:#0047FF;color:#fff;border-color:#0047FF}
+.ex{border:2px solid #0047FF;border-radius:12px;padding:10px;margin-bottom:10px}
+.ex-name{font-weight:500;margin:0}
+.row{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #eee}
+textarea{margin-top:6px}
+.tpl-row{display:grid;grid-template-columns:1.6fr .7fr .9fr .9fr 40px;gap:6px;align-items:center;margin-bottom:6px;font-size:14px}
+.tpl-row.short{grid-template-columns:1.6fr .9fr 40px}
+.add-row{display:grid;grid-template-columns:1.1fr 1.6fr .6fr .8fr .8fr;gap:6px;margin-top:10px;align-items:center}
+.add-row label{font-size:12px;color:#555}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL='https://qkcjukjvmkqoyiobpyqx.supabase.co';
+const SUPABASE_KEY='sb_publishable_FSMANEAfP1o9VHXqBnxluQ_9PCmbAq4';
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const root=document.getElementById('app');
+const DAY=86400000;
+const state={view:'login',sessionId:null,templateId:null,exerciseId:null,cycle:null};
+const sectionOrder={warmup:0,working:1,cooldown:2};
+const SECTION_LABEL={warmup:'Warm-up',working:'Working sets',cooldown:'Cool-down'};
+
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const parseYmd=s=>new Date(s+'T00:00');
+const ymd=d=>{const z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,10);};
+const monday=(d=new Date())=>{const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-((x.getDay()+6)%7));return x;};
+const round025=n=>Math.round(n*4)/4;
+const fmtW=n=>n==null?'':String(n);
+const fmtDate=s=>parseYmd(s).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+
+async function loadCycle(){
+  const {data}=await sb.from('sw_cycle').select('*').order('created_at').limit(1);
+  if(data&&data.length) return data[0];
+  const {data:c,error}=await sb.from('sw_cycle').insert({start_date:'2026-11-02'}).select().single();
+  if(error) throw error;
+  return c;
+}
+function cycleWeekFor(cycle,date=new Date()){
+  const days=Math.floor((new Date(date.getFullYear(),date.getMonth(),date.getDate())-parseYmd(cycle.start_date))/DAY);
+  if(days<0) return null;
+  const w=Math.floor(days/7)+1;
+  return w<=cycle.length_weeks?w:null;
+}
+async function loadTemplates(){
+  let {data}=await sb.from('sw_template').select('*');
+  if(!data||!data.length){
+    const {data:made,error}=await sb.from('sw_template').insert([
+      {label:'A',name:'Push',position:0},{label:'B',name:'Pull',position:1},{label:'C',name:'Legs',position:2}
+    ]).select();
+    if(error) throw error;
+    data=made;
+  }
+  return data.sort((a,b)=>a.position-b.position);
+}
+async function exerciseId(name){
+  const {data}=await sb.from('sw_exercise').select('id').ilike('name',name).limit(1);
+  if(data&&data.length) return data[0].id;
+  const {data:n,error}=await sb.from('sw_exercise').insert({name}).select().single();
+  if(error) throw error;
+  return n.id;
+}
+function topSets(sessions){
+  const map={};
+  sessions.forEach(s=>(s.sw_session_exercise||[]).forEach(se=>{
+    if(!se.exercise_id) return;
+    (se.sw_set||[]).forEach(st=>{
+      if(st.is_warmup||st.weight==null) return;
+      if(map[se.exercise_id]==null||st.weight>map[se.exercise_id]) map[se.exercise_id]=st.weight;
+    });
+  }));
+  return map;
+}
+function lastText(sessions){
+  const out={};
+  sessions.forEach(s=>(s.sw_session_exercise||[]).forEach(se=>{
+    if(!se.exercise_id) return;
+    const sets=(se.sw_set||[]).filter(x=>!x.is_warmup).sort((a,b)=>a.set_number-b.set_number);
+    if(sets.length) out[se.exercise_id]=`${fmtW(sets[0].weight)} × ${sets.map(x=>fmtW(x.reps)).join(', ')}`;
+  }));
+  return out;
+}
+function go(v){state.view=v;render();}
+async function render(){
+  try{
+    const views={login:renderLogin,home:renderHome,session:renderSession,template:renderTemplate,history:renderHistory};
+    await views[state.view]();
+  }catch(err){
+    root.innerHTML=`<div class="card"><p>Something went wrong: ${esc(err.message)}</p><button data-act="home">Back to home</button></div>`;
+  }
+}
+
+function renderLogin(){
+  root.innerHTML=`<div class="card"><h2>Strength</h2><p class="muted">Sign in to your tracker.</p>
+  <input id="em" type="email" placeholder="Email" autocomplete="username" style="margin-bottom:8px">
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password" style="margin-bottom:10px">
+  <button class="blue" data-act="login" style="width:100%">Sign in</button></div>`;
+}
+
+async function renderHome(){
+  const cw=cycleWeekFor(state.cycle);
+  const wk=monday();
+  const lastWk=new Date(wk.getTime()-7*DAY);
+  const [templates,thisWeek,lastWeek]=await Promise.all([
+    loadTemplates(),
+    sb.from('sw_session').select('id,template_id,performed_on').eq('week_start',ymd(wk)).then(r=>r.data||[]),
+    sb.from('sw_session').select('id,template_id,performed_on').eq('week_start',ymd(lastWk)).then(r=>r.data||[])
+  ]);
+  const nextT=templates.find(t=>!thisWeek.some(s=>s.template_id===t.id));
+  let cycleTxt;
+  if(cw) cycleTxt=`Week ${cw} of ${state.cycle.length_weeks}${cw===state.cycle.deload_week?' · Deload':''}`;
+  else cycleTxt=new Date()<parseYmd(state.cycle.start_date)?`Cycle starts ${fmtDate(state.cycle.start_date)}`:'Cycle complete';
+  const tiles=templates.map(t=>{
+    const done=thisWeek.find(s=>s.template_id===t.id);
+    const last=lastWeek.find(s=>s.template_id===t.id);
+    const cls=done?'done':(nextT&&nextT.id===t.id?'next':'todo');
+    const lastTxt=last?`Last week: ${fmtDate(last.performed_on)}, done`:'Last week: not done';
+    return `<div class="tile ${cls}"><div style="flex:1"><p style="margin:0;font-weight:500">${esc(t.label)}: ${esc(t.name)}</p>
+      <p class="muted" style="margin:0;color:inherit">${done?'Done this week · ':''}${lastTxt}</p></div>
+      <button data-act="start" data-id="${t.id}">${done?'Open':'Start'}</button>
+      <button data-act="template" data-id="${t.id}">Edit</button></div>`;
+  }).join('');
+  root.innerHTML=`<div class="top"><span>Strength</span><span><button class="link" data-act="history">History</button> · <button class="link" data-act="logout">Sign out</button></span></div>
+  <div class="card"><p class="muted">Week of ${fmtDate(ymd(wk))}</p><h2>This week</h2><p class="muted">${esc(cycleTxt)}</p>${tiles}</div>`;
+}
+
+async function startOrOpen(templateId){
+  const wk=ymd(monday());
+  const {data:existing}=await sb.from('sw_session').select('id').eq('template_id',templateId).eq('week_start',wk).limit(1);
+  if(existing&&existing.length){state.sessionId=existing[0].id;return go('session');}
+  const cw=cycleWeekFor(state.cycle);
+  const deload=cw!==null&&cw===state.cycle.deload_week;
+  const {data:s,error}=await sb.from('sw_session').insert({template_id:templateId,week_start:wk,cycle_week:cw}).select().single();
+  if(error) throw error;
+  const {data:tes}=await sb.from('sw_template_exercise').select('*').eq('template_id',templateId).order('position');
+  let tops={};
+  if(deload){
+    const {data:prev}=await sb.from('sw_session').select('id,sw_session_exercise(exercise_id,sw_set(weight,is_warmup))')
+      .eq('cycle_week',state.cycle.deload_week-1).gte('week_start',state.cycle.start_date);
+    tops=topSets(prev||[]);
+  }
+  const seRows=(tes||[]).map(te=>{
+    const isDeloadWork=deload&&te.section==='working';
+    const top=te.exercise_id?tops[te.exercise_id]:undefined;
+    const pw=isDeloadWork&&top!=null?round025(top*state.cycle.deload_pct):te.planned_weight;
+    return {session_id:s.id,exercise_id:te.exercise_id,activity_name:te.activity_name,section:te.section,
+      position:te.position,planned_sets:te.planned_sets,planned_reps:isDeloadWork?String(state.cycle.deload_reps):te.planned_reps,
+      planned_weight:pw,planned_duration_min:te.planned_duration_min};
+  });
+  let ses=[];
+  if(seRows.length){
+    const {data:made,error:e2}=await sb.from('sw_session_exercise').insert(seRows).select();
+    if(e2) throw e2;
+    ses=made;
+  }
+  const setRows=[];
+  ses.forEach(se=>{
+    if(se.section!=='working') return;
+    const reps=parseInt(se.planned_reps,10)||null;
+    for(let i=1;i<=(se.planned_sets||0);i++) setRows.push({session_exercise_id:se.id,set_number:i,weight:se.planned_weight,reps});
+  });
+  if(setRows.length){
+    const {error:e3}=await sb.from('sw_set').insert(setRows);
+    if(e3) throw e3;
+  }
+  state.sessionId=s.id;
+  go('session');
+}
+
+async function renderSession(){
+  const {data:s}=await sb.from('sw_session').select('*, sw_template(label,name)').eq('id',state.sessionId).single();
+  const {data:items}=await sb.from('sw_session_exercise').select('*, sw_exercise(name), sw_set(*)').eq('session_id',state.sessionId);
+  const lastMon=new Date(monday().getTime()-7*DAY);
+  const {data:prev}=await sb.from('sw_session').select('id,sw_session_exercise(exercise_id,sw_set(weight,reps,set_number,is_warmup))').eq('week_start',ymd(lastMon));
+  const prevMap=lastText(prev||[]);
+  const list=(items||[]).sort((a,b)=>sectionOrder[a.section]-sectionOrder[b.section]||a.position-b.position);
+  const cw=s.cycle_week;
+  const deload=cw&&cw===state.cycle.deload_week;
+  let body='';
+  ['warmup','working','cooldown'].forEach(sec=>{
+    const sub=list.filter(i=>i.section===sec);
+    if(!sub.length) return;
+    body+=`<section class="card"><h3>${SECTION_LABEL[sec]}</h3>`;
+    sub.forEach(it=>{
+      const name=it.sw_exercise?.name||it.activity_name;
+      if(sec!=='working'){
+        body+=`<label class="row"><input type="checkbox" data-act="complete" data-id="${it.id}" ${it.completed?'checked':''} style="width:auto"> <span>${esc(name)}${it.planned_duration_min?` · ${esc(it.planned_duration_min)} min`:''}</span></label>`;
+        return;
+      }
+      const sets=(it.sw_set||[]).sort((a,b)=>a.set_number-b.set_number);
+      const prevTxt=prevMap[it.exercise_id]||'none';
+      body+=`<div class="ex"><p class="ex-name">${esc(name)}</p>
+        <p class="muted pink">Last week: ${esc(prevTxt)} · Plan: ${esc(it.planned_sets||sets.length)} × ${esc(it.planned_reps||'')}${deload?' (deload)':''}</p>
+        <div class="set-head"><span></span><span>Weight (lb)</span><span>Reps</span><span></span></div>`;
+      sets.forEach(st=>{
+        body+=`<div class="set-row"><span>${st.set_number}</span>
+          <input type="number" inputmode="decimal" step="0.25" value="${fmtW(st.weight)}" data-act="setw" data-id="${st.id}" aria-label="Set ${st.set_number} weight">
+          <input type="number" inputmode="numeric" value="${fmtW(st.reps)}" data-act="setr" data-id="${st.id}" aria-label="Set ${st.set_number} reps">
+          <button class="check ${st.completed?'on':''}" data-act="setdone" data-id="${st.id}" aria-label="Mark set done">✓</button></div>`;
+      });
+      body+=`<textarea data-act="note" data-id="${it.id}" rows="2" placeholder="Note for ${esc(name)}">${esc(it.note||'')}</textarea></div>`;
+    });
+    body+='</section>';
+  });
+  root.innerHTML=`<div class="top"><button class="link" data-act="home">‹ Home</button><span>${esc(s.sw_template.label)}: ${esc(s.sw_template.name)}</span></div>
+    <p class="muted" style="color:#fff">${cw?`Week ${cw} of ${state.cycle.length_weeks}${deload?' · Deload':''}`:''}</p>${body}`;
+}
+
+async function renderTemplate(){
+  const {data:t}=await sb.from('sw_template').select('*').eq('id',state.templateId).single();
+  const {data:items}=await sb.from('sw_template_exercise').select('*, sw_exercise(name)').eq('template_id',state.templateId);
+  const list=(items||[]).sort((a,b)=>sectionOrder[a.section]-sectionOrder[b.section]||a.position-b.position);
+  let rows='';
+  ['warmup','working','cooldown'].forEach(sec=>{
+    const sub=list.filter(i=>i.section===sec);
+    rows+=`<h3 class="sec">${SECTION_LABEL[sec]}</h3>`;
+    if(!sub.length) rows+='<p class="muted">Nothing yet</p>';
+    sub.forEach(it=>{
+      if(sec==='working'){
+        rows+=`<div class="tpl-row"><span>${esc(it.sw_exercise?.name||'')}</span>
+          <input type="number" inputmode="numeric" data-act="tfield" data-id="${it.id}" data-field="planned_sets" value="${fmtW(it.planned_sets)}" aria-label="Sets">
+          <input type="text" data-act="tfield" data-id="${it.id}" data-field="planned_reps" value="${esc(it.planned_reps||'')}" aria-label="Reps">
+          <input type="number" inputmode="decimal" step="0.25" data-act="tfield" data-id="${it.id}" data-field="planned_weight" value="${fmtW(it.planned_weight)}" aria-label="Weight">
+          <button class="danger" data-act="tdel" data-id="${it.id}" aria-label="Remove">✕</button></div>`;
+      }else{
+        rows+=`<div class="tpl-row short"><input type="text" data-act="tfield" data-id="${it.id}" data-field="activity_name" value="${esc(it.activity_name||'')}" aria-label="Name">
+          <input type="number" inputmode="decimal" step="1" data-act="tfield" data-id="${it.id}" data-field="planned_duration_min" value="${fmtW(it.planned_duration_min)}" aria-label="Minutes">
+          <button class="danger" data-act="tdel" data-id="${it.id}" aria-label="Remove">✕</button></div>`;
+      }
+    });
+  });
+  root.innerHTML=`<div class="top"><button class="link" data-act="home">‹ Home</button><span>Edit template</span></div>
+  <div class="card"><label class="muted">Template name</label>
+    <input type="text" data-act="tname" value="${esc(t.name||'')}" aria-label="Template name">
+    <p class="muted">Changes apply to future workouts. Each change saves as you make it.</p>
+    ${rows}
+    <div class="card" style="margin:14px 0 0;background:#F7F7F7">
+      <h3>Add item</h3>
+      <div class="add-row">
+        <div><label>Section</label><select id="new-sec" data-act="secpick"><option value="working">Working</option><option value="warmup">Warm-up</option><option value="cooldown">Cool-down</option></select></div>
+        <div><label>Name</label><input id="new-name" type="text" placeholder="Name"></div>
+        <div><label>Sets</label><input id="new-sets" type="number" inputmode="numeric" placeholder="3"></div>
+        <div><label>Reps</label><input id="new-reps" type="text" placeholder="8-10"></div>
+        <div><label id="new-val-label">Weight (lb)</label><input id="new-val" type="number" inputmode="decimal" step="0.25" placeholder="0"></div>
+      </div>
+      <button class="blue" data-act="tadd" style="margin-top:10px">Add item</button>
+    </div>
+  </div>`;
+}
+
+async function renderHistory(){
+  if(!state.exerciseId){
+    const {data}=await sb.from('sw_exercise').select('id,name').order('name');
+    const list=(data||[]).map(x=>`<div class="row"><button data-act="exhist" data-id="${x.id}" style="flex:1;text-align:left;border:none">${esc(x.name)}</button></div>`).join('')
+      ||'<p class="muted">No exercises yet. Add them from a template.</p>';
+    root.innerHTML=`<div class="top"><button class="link" data-act="home">‹ Home</button><span>History</span></div><div class="card">${list}</div>`;
+    return;
+  }
+  const {data:ex}=await sb.from('sw_exercise').select('name').eq('id',state.exerciseId).single();
+  const {data}=await sb.from('sw_session_exercise').select('note, sw_session(performed_on,cycle_week), sw_set(weight,reps,set_number,is_warmup)').eq('exercise_id',state.exerciseId);
+  const entries=(data||[]).filter(x=>x.sw_session).sort((a,b)=>b.sw_session.performed_on.localeCompare(a.sw_session.performed_on));
+  const body=entries.map(en=>{
+    const sets=(en.sw_set||[]).filter(s=>!s.is_warmup).sort((a,b)=>a.set_number-b.set_number);
+    return `<div class="ex"><p class="muted" style="margin:0">${fmtDate(en.sw_session.performed_on)}${en.sw_session.cycle_week?` · Week ${en.sw_session.cycle_week}`:''}</p>
+      <p style="margin:4px 0">${esc(sets.map(s=>`${fmtW(s.weight)} × ${fmtW(s.reps)}`).join(', '))}</p>
+      ${en.note?`<p class="pink" style="margin:0">${esc(en.note)}</p>`:''}</div>`;
+  }).join('')||'<p class="muted">No sessions yet.</p>';
+  root.innerHTML=`<div class="top"><button class="link" data-act="history">‹ Exercises</button><span>${esc(ex.name)}</span></div><div class="card">${body}</div>`;
+}
+
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-act]');
+  if(!b) return;
+  const act=b.dataset.act, id=b.dataset.id;
+  try{
+    switch(act){
+      case 'login': {
+        const {error}=await sb.auth.signInWithPassword({email:document.getElementById('em').value.trim(),password:document.getElementById('pw').value});
+        if(error) return alert(error.message);
+        state.cycle=await loadCycle();
+        return go('home');
+      }
+      case 'logout': await sb.auth.signOut(); return go('login');
+      case 'home': return go('home');
+      case 'history': state.exerciseId=null; return go('history');
+      case 'exhist': state.exerciseId=id; return go('history');
+      case 'start': return startOrOpen(id);
+      case 'template': state.templateId=id; return go('template');
+      case 'setdone': {
+        const on=!b.classList.contains('on');
+        b.classList.toggle('on',on);
+        const {error}=await sb.from('sw_set').update({completed:on}).eq('id',id);
+        if(error) throw error;
+        return;
+      }
+      case 'tdel': {
+        const {error}=await sb.from('sw_template_exercise').delete().eq('id',id);
+        if(error) throw error;
+        return go('template');
+      }
+      case 'tadd': {
+        const sec=document.getElementById('new-sec').value;
+        const name=document.getElementById('new-name').value.trim();
+        if(!name) return alert('Enter a name');
+        const v=document.getElementById('new-val').value;
+        const row={template_id:state.templateId,section:sec,position:Math.floor(Date.now()/1000)};
+        if(sec==='working'){
+          row.exercise_id=await exerciseId(name);
+          row.planned_sets=parseInt(document.getElementById('new-sets').value,10)||null;
+          row.planned_reps=document.getElementById('new-reps').value.trim()||null;
+          row.planned_weight=v===''?null:Number(v);
+        }else{
+          row.activity_name=name;
+          row.planned_duration_min=v===''?null:Number(v);
+        }
+        const {error}=await sb.from('sw_template_exercise').insert(row);
+        if(error) throw error;
+        return go('template');
+      }
+    }
+  }catch(err){alert(err.message);}
+});
+
+document.addEventListener('change',async e=>{
+  const el=e.target;
+  const act=el.dataset.act;
+  if(act==='secpick'){
+    document.getElementById('new-val-label').textContent=el.value==='working'?'Weight (lb)':'Minutes';
+    return;
+  }
+  if(!act) return;
+  const id=el.dataset.id;
+  try{
+    if(act==='setw') await sb.from('sw_set').update({weight:el.value===''?null:Number(el.value)}).eq('id',id).throwOnError();
+    else if(act==='setr') await sb.from('sw_set').update({reps:el.value===''?null:parseInt(el.value,10)}).eq('id',id).throwOnError();
+    else if(act==='note') await sb.from('sw_session_exercise').update({note:el.value||null}).eq('id',id).throwOnError();
+    else if(act==='complete') await sb.from('sw_session_exercise').update({completed:el.checked}).eq('id',id).throwOnError();
+    else if(act==='tname') await sb.from('sw_template').update({name:el.value.trim()}).eq('id',state.templateId).throwOnError();
+    else if(act==='tfield'){
+      const f=el.dataset.field;
+      const v=el.value.trim();
+      let val;
+      if(f==='planned_sets') val=v===''?null:parseInt(v,10);
+      else if(f==='planned_reps'||f==='activity_name') val=v===''?null:v;
+      else val=v===''?null:Number(v);
+      await sb.from('sw_template_exercise').update({[f]:val}).eq('id',id).throwOnError();
+    }
+  }catch(err){alert(err.message);}
+});
+
+(async()=>{
+  const {data}=await sb.auth.getSession();
+  if(!data.session) return go('login');
+  state.cycle=await loadCycle();
+  go('home');
+})();
+</script>
+</body>
+</html>
