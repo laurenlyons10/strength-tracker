@@ -50,7 +50,7 @@ const SUPABASE_KEY='sb_publishable_FSMANEAfP1o9VHXqBnxluQ_9PCmbAq4';
 const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const root=document.getElementById('app');
 const DAY=86400000;
-const state={view:'login',sessionId:null,templateId:null,exerciseId:null,cycle:null};
+const state={view:'login',sessionId:null,templateId:null,exerciseId:null,cycle:null,weekView:'base'};
 const sectionOrder={warmup:0,working:1,cooldown:2};
 const SECTION_LABEL={warmup:'Warm-up',working:'Working sets',cooldown:'Cool-down'};
 
@@ -180,12 +180,20 @@ async function startOrOpen(templateId){
       .eq('cycle_week',state.cycle.deload_week-1).gte('week_start',state.cycle.start_date);
     tops=topSets(prev||[]);
   }
+  const wpMap={};
+  if(cw&&tes&&tes.length){
+    const {data:wps}=await sb.from('sw_week_plan').select('*').in('template_exercise_id',tes.map(t=>t.id)).eq('cycle_week',cw);
+    (wps||[]).forEach(w=>{wpMap[w.template_exercise_id]=w;});
+  }
   const seRows=(tes||[]).map(te=>{
+    const w=wpMap[te.id]||{};
     const isDeloadWork=deload&&te.section==='working';
     const top=te.exercise_id?tops[te.exercise_id]:undefined;
-    const pw=isDeloadWork&&top!=null?round025(top*state.cycle.deload_pct):te.planned_weight;
+    const calcW=isDeloadWork&&top!=null?round025(top*state.cycle.deload_pct):null;
+    const pw=w.planned_weight!=null?w.planned_weight:(calcW!=null?calcW:te.planned_weight);
+    const reps=w.planned_reps!=null?w.planned_reps:(isDeloadWork?String(state.cycle.deload_reps):te.planned_reps);
     return {session_id:s.id,exercise_id:te.exercise_id,activity_name:te.activity_name,section:te.section,
-      position:te.position,planned_sets:te.planned_sets,planned_reps:isDeloadWork?String(state.cycle.deload_reps):te.planned_reps,
+      position:te.position,planned_sets:w.planned_sets!=null?w.planned_sets:te.planned_sets,planned_reps:reps,
       planned_weight:pw,planned_duration_min:te.planned_duration_min};
   });
   let ses=[];
@@ -251,6 +259,16 @@ async function renderTemplate(){
   const {data:t}=await sb.from('sw_template').select('*').eq('id',state.templateId).single();
   const {data:items}=await sb.from('sw_template_exercise').select('*, sw_exercise(name)').eq('template_id',state.templateId);
   const list=(items||[]).sort((a,b)=>sectionOrder[a.section]-sectionOrder[b.section]||a.position-b.position);
+  const wmap={};
+  const workIds=list.filter(i=>i.section==='working').map(i=>i.id);
+  if(workIds.length){
+    const {data:wps}=await sb.from('sw_week_plan').select('*').in('template_exercise_id',workIds);
+    (wps||[]).forEach(w=>{wmap[w.template_exercise_id+'|'+w.cycle_week]=w;});
+  }
+  const wk=String(state.weekView);
+  const wkAttr=wk==='base'?'':` data-week="${wk}"`;
+  const eff=(it,f)=>{const o=wk==='base'?null:wmap[it.id+'|'+wk];return o&&o[f]!=null?o[f]:it[f];};
+  const tabs=['base','1','2','3','4','5','6'].map(v=>`<button data-act="wk" data-id="${v}" style="${wk===v?'background:#0047FF;color:#fff;border-color:#0047FF':''}">${v==='base'?'Base':'Wk '+v}</button>`).join('');
   let rows='';
   ['warmup','working','cooldown'].forEach(sec=>{
     const sub=list.filter(i=>i.section===sec);
@@ -259,9 +277,9 @@ async function renderTemplate(){
     sub.forEach(it=>{
       if(sec==='working'){
         rows+=`<div class="tpl-row"><span>${esc(it.sw_exercise?.name||'')}</span>
-          <input type="number" inputmode="numeric" data-act="tfield" data-id="${it.id}" data-field="planned_sets" value="${fmtW(it.planned_sets)}" aria-label="Sets">
-          <input type="text" data-act="tfield" data-id="${it.id}" data-field="planned_reps" value="${esc(it.planned_reps||'')}" aria-label="Reps">
-          <input type="number" inputmode="decimal" step="0.25" data-act="tfield" data-id="${it.id}" data-field="planned_weight" value="${fmtW(it.planned_weight)}" aria-label="Weight">
+          <input type="number" inputmode="numeric" data-act="tfield" data-id="${it.id}" data-field="planned_sets" value="${fmtW(eff(it,'planned_sets'))}" aria-label="Sets"${wkAttr}>
+          <input type="text" data-act="tfield" data-id="${it.id}" data-field="planned_reps" value="${esc(eff(it,'planned_reps')||'')}" aria-label="Reps"${wkAttr}>
+          <input type="number" inputmode="decimal" step="0.25" data-act="tfield" data-id="${it.id}" data-field="planned_weight" value="${fmtW(eff(it,'planned_weight'))}" aria-label="Weight"${wkAttr}>
           <button class="danger" data-act="tdel" data-id="${it.id}" aria-label="Remove">✕</button></div>`;
       }else{
         rows+=`<div class="tpl-row short"><input type="text" data-act="tfield" data-id="${it.id}" data-field="activity_name" value="${esc(it.activity_name||'')}" aria-label="Name">
@@ -273,7 +291,8 @@ async function renderTemplate(){
   root.innerHTML=`<div class="top"><button class="link" data-act="home">‹ Home</button><span>Edit template</span></div>
   <div class="card"><label class="muted">Template name</label>
     <input type="text" data-act="tname" value="${esc(t.name||'')}" aria-label="Template name">
-    <p class="muted">Changes apply to future workouts. Each change saves as you make it.</p>
+    <p class="muted">Base applies to every week. A week tab overrides only the fields you change there; clear a week field to go back to base. Warm-up and cool-down use base only.</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${tabs}</div>
     ${rows}
     <div class="card" style="margin:14px 0 0;background:#F7F7F7">
       <h3>Add item</h3>
@@ -337,7 +356,8 @@ document.addEventListener('click',async e=>{
       case 'history': state.exerciseId=null; return go('history');
       case 'exhist': state.exerciseId=id; return go('history');
       case 'start': return startOrOpen(id);
-      case 'template': state.templateId=id; return go('template');
+      case 'template': state.templateId=id; state.weekView='base'; return go('template');
+      case 'wk': state.weekView=id; return go('template');
       case 'setdone': {
         const on=!b.classList.contains('on');
         b.classList.toggle('on',on);
@@ -395,7 +415,9 @@ document.addEventListener('change',async e=>{
       if(f==='planned_sets') val=v===''?null:parseInt(v,10);
       else if(f==='planned_reps'||f==='activity_name') val=v===''?null:v;
       else val=v===''?null:Number(v);
-      await sb.from('sw_template_exercise').update({[f]:val}).eq('id',id).throwOnError();
+      const wkv=el.dataset.week;
+      if(wkv) await sb.from('sw_week_plan').upsert({template_exercise_id:id,cycle_week:Number(wkv),[f]:val},{onConflict:'template_exercise_id,cycle_week'}).throwOnError();
+      else await sb.from('sw_template_exercise').update({[f]:val}).eq('id',id).throwOnError();
     }
   }catch(err){alert(err.message);}
 });
